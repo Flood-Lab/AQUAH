@@ -1,6 +1,8 @@
 # AQUAH_v0.1 (Linux)
 
 AI agent for hydrologic modeling
+[![Watch the video](https://img.youtube.com/vi/uJNpz13SwGw/0.jpg)](https://www.youtube.com/watch?v=uJNpz13SwGw)
+
 
 ---
 
