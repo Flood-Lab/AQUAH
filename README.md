@@ -1,4 +1,4 @@
-# AQUAH_v0.1 (Linux)
+# AQUAH (Linux)
 
 AI agent for hydrologic modeling
 
