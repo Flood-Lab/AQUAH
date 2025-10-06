@@ -229,6 +229,136 @@ Performance metrics show a Nash-Sutcliffe Coefficient of Efficiency (NSCE) of {n
 """
     return summary.strip()
 
+# Census API report writer
+import requests
+import json
+from openai import OpenAI
+
+# Helper mapping
+STATE_FIPS = {
+    "Alabama": "01", "Alaska": "02", "Arizona": "04", "Arkansas": "05",
+    "California": "06", "Colorado": "08", "Connecticut": "09", "Delaware": "10",
+    "Florida": "12", "Georgia": "13", "Hawaii": "15", "Idaho": "16",
+    "Illinois": "17", "Indiana": "18", "Iowa": "19", "Kansas": "20",
+    "Kentucky": "21", "Louisiana": "22", "Maine": "23", "Maryland": "24",
+    "Massachusetts": "25", "Michigan": "26", "Minnesota": "27", "Mississippi": "28",
+    "Missouri": "29", "Montana": "30", "Nebraska": "31", "Nevada": "32",
+    "New Hampshire": "33", "New Jersey": "34", "New Mexico": "35", "New York": "36",
+    "North Carolina": "37", "North Dakota": "38", "Ohio": "39", "Oklahoma": "40",
+    "Oregon": "41", "Pennsylvania": "42", "Rhode Island": "44", "South Carolina": "45",
+    "South Dakota": "46", "Tennessee": "47", "Texas": "48", "Utah": "49",
+    "Vermont": "50", "Virginia": "51", "Washington": "53", "West Virginia": "54",
+    "Wisconsin": "55", "Wyoming": "56",
+    "District of Columbia": "11"
+}
+
+def generate_census_based_summary(basin_name, time_start, time_end):
+    """
+    Fetch ACS data for the state corresponding to basin_name (fallback to Texas)
+    using state FIPS mapping, then generate a summary via OpenAI.
+    """
+
+    print("[INFO] Starting census-based summary generation.")
+
+    # 1. Derive year from time_start
+    try:
+        if hasattr(time_start, "year"):
+            year = time_start.year
+        else:
+            year = int(str(time_start).split("-")[0])
+    except Exception as e:
+        print(f"[WARN] Could not parse year from time_start: {e}")
+        year = 2025
+
+    # 2. Determine state and FIPS code
+    state = basin_name if basin_name in STATE_FIPS else "Texas"
+    state_fips = STATE_FIPS.get(state, STATE_FIPS["Texas"])
+    print(f"[INFO] Using state {state} with FIPS {state_fips}")
+
+    # 3. Prepare Census API variables
+    census_api_key = os.environ.get("CENSUS_API_KEY")
+    if not census_api_key:
+        print("[WARN] No Census API key found — using fallback mock data.")
+        census_details = {
+            "Population": "N/A",
+            "Median Age": "N/A",
+            "Male Population": "N/A",
+            "Female Population": "N/A",
+            "Median Household Income": "N/A",
+            "Disability Estimate": "N/A",
+            "Veterans Estimate": "N/A",
+            "Average Household Size": "N/A",
+            "Vehicles Available Ratio": "N/A",
+        }
+    else:
+        try:
+            # List of ACS variables we want (example codes)
+            vars_list = [
+                "B01003_001E",  # total population
+                "B01002_001E",  # median age
+                "B01001_002E",  # male pop
+                "B01001_026E",  # female pop
+                "B19013_001E",  # median household income
+                "C18108_001E",  # estimate: disability
+                "B21001_002E",  # veterans (civilian population + veterans)
+                "B25010_001E",  # average household size
+                "B08201_002E"   # households with no vehicle (or vehicles) — example
+            ]
+            get_vars = ",".join(vars_list + ["NAME"])
+            url = (
+                f"https://api.census.gov/data/{year}/acs/acs5"
+                f"?get={get_vars}"
+                f"&for=state:{state_fips}"
+                f"&key={census_api_key}"
+            )
+            resp = requests.get(url)
+            arr = resp.json()
+            # arr[0] is header, arr[1] is data row
+            header = arr[0]
+            row = arr[1]
+            census_details = {header[i]: row[i] for i in range(len(header))}
+        except Exception as e:
+            print(f"[ERROR] Census API fetch failed: {e}")
+            census_details = {
+                "Population": "N/A",
+                "Median Age": "N/A",
+                "Male Population": "N/A",
+                "Female Population": "N/A",
+                "Median Household Income": "N/A",
+                "Disability Estimate": "N/A",
+                "Veterans Estimate": "N/A",
+                "Average Household Size": "N/A",
+                "Vehicles Available Ratio": "N/A",
+            }
+
+    print("[INFO] Census details:", census_details)
+
+    # 4. Generate prompt for OpenAI summary
+    prompt = f"""
+You are a hydrology & flood evacuation expert. Summarize the following demographic data
+for {state} (time period: {time_start} — {time_end}). Then explain how these factors
+impact hydrological modeling, flood risk, and evacuation planning:
+
+Data:
+{json.dumps(census_details, indent=2)}
+"""
+
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    client = OpenAI(api_key=openai_api_key)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0.3
+        )
+        summary = response.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"[WARN] OpenAI summary failed: {e}")
+        summary = "Summary not available due to API error."
+
+    return summary
+  
 from crewai import LLM
 
 def _get_crewai_llm(model_name: str, *, temperature: float = 0.7) -> LLM:
