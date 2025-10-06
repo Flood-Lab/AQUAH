@@ -442,6 +442,36 @@ def aquah_run(llm_model_name: str):
     importlib.reload(tools.agent_report_writer)
     tools.agent_report_writer.final_report_writer(args, crest_args, agents_config, tasks_config, iteration_num=0)
 
+    # Demographic summary
+    from tools.agent_report_writer import generate_census_based_summary
+    summary_text = generate_census_based_summary(
+        basin_name=args.basin_name,
+        time_start=args.time_start,
+        time_end=args.time_end
+    )
+
+    md_path = "Hydro_Report.md"
+    if os.path.exists(md_path):
+        with open(md_path, "a", encoding="utf-8") as f:
+            f.write("\n\n---\n### Demographic & Socioeconomic Insights\n\n")
+            f.write(summary_text + "\n")
+
+        print("[INFO] Appended demographic summary to Markdown report.")
+
+        # Regenerate PDF with appended summary
+        if not os.path.exists(args.report_path):
+           os.makedirs(args.report_path)
+
+        extra = ['--pdf-engine=xelatex', '--variable', 'mainfont=Latin Modern Roman']
+        output_pdf_path = os.path.join(
+          args.report_path,
+          f'Hydro_Report_{args.basin_name.replace(" ", "_")}_FINAL.pdf'
+        )
+        pypandoc.convert_file(md_path, 'pdf', outputfile=output_pdf_path, extra_args=extra)
+        print("[INFO] Final PDF with appended summary saved to:", output_pdf_path)
+    else:
+        print("[WARN] Hydro_Report.md not found, cannot append summary.")
+        
 
     # Save simulation arguments to a pickle file for future reference
     import pickle
