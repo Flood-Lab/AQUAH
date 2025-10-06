@@ -418,11 +418,6 @@ def aquah_run(llm_model_name: str):
     print('--------------------------------------------------------\033[0m\033[0m\n')
 
     import importlib
-    import tools.crest_run
-    importlib.reload(tools.crest_run)
-    tools.crest_run.crest_run_cali(args)
-
-    import importlib
     import tools.agent_parameter_initial_guess
     importlib.reload(tools.agent_parameter_initial_guess)
     crest_args, why_parameter_initial_guess = tools.agent_parameter_initial_guess.get_initial_crest_args(args)
@@ -430,6 +425,11 @@ def aquah_run(llm_model_name: str):
     crest_args.grid_on = True
     args.grid_on = crest_args.grid_on
     args.why_parameter_initial_guess = why_parameter_initial_guess
+    
+    import importlib
+    import tools.crest_run
+    importlib.reload(tools.crest_run)
+    tools.crest_run.crest_run_cali(args)
     
 
     # return
