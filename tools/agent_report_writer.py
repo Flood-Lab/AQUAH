@@ -230,134 +230,187 @@ Performance metrics show a Nash-Sutcliffe Coefficient of Efficiency (NSCE) of {n
     return summary.strip()
 
 # Census API report writer
-import requests
+import os
 import json
+import requests
 from openai import OpenAI
-
-# Helper mapping
-STATE_FIPS = {
-    "Alabama": "01", "Alaska": "02", "Arizona": "04", "Arkansas": "05",
-    "California": "06", "Colorado": "08", "Connecticut": "09", "Delaware": "10",
-    "Florida": "12", "Georgia": "13", "Hawaii": "15", "Idaho": "16",
-    "Illinois": "17", "Indiana": "18", "Iowa": "19", "Kansas": "20",
-    "Kentucky": "21", "Louisiana": "22", "Maine": "23", "Maryland": "24",
-    "Massachusetts": "25", "Michigan": "26", "Minnesota": "27", "Mississippi": "28",
-    "Missouri": "29", "Montana": "30", "Nebraska": "31", "Nevada": "32",
-    "New Hampshire": "33", "New Jersey": "34", "New Mexico": "35", "New York": "36",
-    "North Carolina": "37", "North Dakota": "38", "Ohio": "39", "Oklahoma": "40",
-    "Oregon": "41", "Pennsylvania": "42", "Rhode Island": "44", "South Carolina": "45",
-    "South Dakota": "46", "Tennessee": "47", "Texas": "48", "Utah": "49",
-    "Vermont": "50", "Virginia": "51", "Washington": "53", "West Virginia": "54",
-    "Wisconsin": "55", "Wyoming": "56",
-    "District of Columbia": "11"
-}
+from statistics import mean
 
 def generate_census_based_summary(basin_name, time_start, time_end):
     """
-    Fetch ACS data for the state corresponding to basin_name (fallback to Texas)
-    using state FIPS mapping, then generate a summary via OpenAI.
+    Extracts Census ACS data for the most granular geography level available
+    (block group → tract → county) overlapping the basin, and summarizes demographics.
     """
 
-    print("[INFO] Starting census-based summary generation.")
+    print(f"[INFO] Starting census-based summary for basin: {basin_name}")
 
-    # 1. Derive year from time_start
+    # --- Step 1: Derive year ---
     try:
         if hasattr(time_start, "year"):
             year = time_start.year
         else:
             year = int(str(time_start).split("-")[0])
-    except Exception as e:
-        print(f"[WARN] Could not parse year from time_start: {e}")
+    except Exception:
         year = 2025
 
-    # 2. Determine state and FIPS code
-    state = basin_name if basin_name in STATE_FIPS else "Texas"
-    state_fips = STATE_FIPS.get(state, STATE_FIPS["Texas"])
-    print(f"[INFO] Using state {state} with FIPS {state_fips}")
-
-    # 3. Prepare Census API variables
-    census_api_key = os.environ.get("CENSUS_API_KEY")
-    if not census_api_key:
-        print("[WARN] No Census API key found — using fallback mock data.")
-        census_details = {
-            "Population": "N/A",
-            "Median Age": "N/A",
-            "Male Population": "N/A",
-            "Female Population": "N/A",
-            "Median Household Income": "N/A",
-            "Disability Estimate": "N/A",
-            "Veterans Estimate": "N/A",
-            "Average Household Size": "N/A",
-            "Vehicles Available Ratio": "N/A",
-        }
-    else:
-        try:
-            # List of ACS variables we want (example codes)
-            vars_list = [
-                "B01003_001E",  # total population
-                "B01002_001E",  # median age
-                "B01001_002E",  # male pop
-                "B01001_026E",  # female pop
-                "B19013_001E",  # median household income
-                "C18108_001E",  # estimate: disability
-                "B21001_002E",  # veterans (civilian population + veterans)
-                "B25010_001E",  # average household size
-                "B08201_002E"   # households with no vehicle (or vehicles) — example
-            ]
-            get_vars = ",".join(vars_list + ["NAME"])
-            url = (
-                f"https://api.census.gov/data/{year}/acs/acs5"
-                f"?get={get_vars}"
-                f"&for=state:{state_fips}"
-                f"&key={census_api_key}"
-            )
-            resp = requests.get(url)
-            arr = resp.json()
-            # arr[0] is header, arr[1] is data row
-            header = arr[0]
-            row = arr[1]
-            census_details = {header[i]: row[i] for i in range(len(header))}
-        except Exception as e:
-            print(f"[ERROR] Census API fetch failed: {e}")
-            census_details = {
-                "Population": "N/A",
-                "Median Age": "N/A",
-                "Male Population": "N/A",
-                "Female Population": "N/A",
-                "Median Household Income": "N/A",
-                "Disability Estimate": "N/A",
-                "Veterans Estimate": "N/A",
-                "Average Household Size": "N/A",
-                "Vehicles Available Ratio": "N/A",
-            }
-
-    print("[INFO] Census details:", census_details)
-
-    # 4. Generate prompt for OpenAI summary
-    prompt = f"""
-You are a hydrology & flood evacuation expert. Summarize the following demographic data
-for {state} (time period: {time_start} — {time_end}). Then explain how these factors
-impact hydrological modeling, flood risk, and evacuation planning:
-
-Data:
-{json.dumps(census_details, indent=2)}
-"""
-
+    # --- Step 2: Ask OpenAI for smallest geographies ---
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     client = OpenAI(api_key=openai_api_key)
+
+    geo_prompt = f
+    """
+You are a GIS expert. The hydrological basin "{basin_name}" spans multiple U.S. Census areas.
+Return a JSON object listing the smallest available ACS geography units (prefer block groups; 
+if not, use tracts; if not, use counties) intersecting this basin.
+
+For each geography, include:
+- geography_level: "block_group", "tract", or "county"
+- state_fips
+- county_fips
+- tract (if applicable)
+- block_group (if applicable)
+
+Return valid JSON on
+    """
+
+    try:
+        geo_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": geo_prompt}],
+            temperature=0.2,
+            max_tokens=500
+        )
+        geo_text = geo_response.choices[0].message.content.strip()
+        json_start = geo_text.find("{")
+        json_end = geo_text.rfind("}") + 1
+        geo_json_str = geo_text[json_start:json_end]
+        geo_data = json.loads(geo_json_str)
+        geographies = geo_data.get("geographies", [])
+        print("[INFO] Identified geographies:", geographies)
+    except Exception as e:
+        print(f"[WARN] Could not parse geographies from OpenAI: {e}")
+        geographies = []
+
+    # --- Step 3: Fallback if none ---
+    if not geographies:
+        print("[WARN] Falling back to Caddo County, Oklahoma (approximation).")
+        geographies = [{
+            "geography_level": "county",
+            "state_fips": "40",
+            "county_fips": "015"
+        }]
+
+    # --- Step 4: Define variables and ACS key ---
+    census_api_key = os.environ.get("CENSUS_API_KEY")
+    if not census_api_key:
+        print("[WARN] No Census API key — using mock data.")
+        return "No census data available."
+
+    vars_list = [
+        "B01003_001E",  # total population
+        "B01002_001E",  # median age
+        "B01001_002E",  # male pop
+        "B01001_026E",  # female pop
+        "B19013_001E",  # median household income
+        "C18108_001E",  # disability
+        "B21001_002E",  # veterans
+        "B25010_001E",  # household size
+        "B08201_002E"   # households with vehicles
+    ]
+    get_vars = ",".join(vars_list)
+
+    # --- Step 5: Adaptive fetching based on level ---
+    def try_fetch(level):
+        """
+        Fetch ACS data for all geographies of a specific level.
+        Only keeps entries that return valid data.
+        """
+        collected = []
+        for g in geographies:
+            if g["geography_level"] != level:
+                continue
+            try:
+                base_url = f"https://api.census.gov/data/{year}/acs/acs5"
+                if level == "block_group":
+                    geo_params = (
+                        f"for=block%20group:{g['block_group']}"
+                        f"&in=state:{g['state_fips']}+county:{g['county_fips']}+tract:{g['tract']}"
+                    )
+                elif level == "tract":
+                    geo_params = (
+                        f"for=tract:{g['tract']}"
+                        f"&in=state:{g['state_fips']}+county:{g['county_fips']}"
+                    )
+                elif level == "county":
+                    geo_params = f"for=county:{g['county_fips']}&in=state:{g['state_fips']}"
+                else:
+                    continue
+
+                url = f"{base_url}?get={get_vars}&{geo_params}&key={census_api_key}"
+                resp = requests.get(url)
+
+                if not resp.text.strip():
+                    print(f"[INFO] ACS returned empty for {g}")
+                    continue
+
+                data = resp.json()
+                if len(data) > 1:
+                    header = data[0]
+                    row = data[1]
+                    parsed = {header[i]: float(row[i]) if row[i] not in [None, ''] else 0 for i in range(len(header))}
+                    collected.append(parsed)
+
+            except Exception as e:
+                print(f"[WARN] Failed to fetch ACS for {g}: {e}")
+        return collected
+
+    # --- Try levels progressively ---
+    collected_data = try_fetch("block_group")
+    if not collected_data:
+        print("[INFO] Block group data unavailable, trying tracts...")
+        collected_data = try_fetch("tract")
+    if not collected_data:
+        print("[INFO] Tract data unavailable, trying counties...")
+        collected_data = try_fetch("county")
+
+    if not collected_data:
+        print("[WARN] No ACS data collected — fallback summary.")
+        return f"No ACS data found for {basin_name}."
+
+    # --- Step 6: Aggregate ---
+    census_summary = {}
+    for var in vars_list:
+        try:
+            census_summary[var] = round(mean([d.get(var, 0) for d in collected_data]), 2)
+        except Exception:
+            census_summary[var] = "N/A"
+
+    print("[INFO] Aggregated Census Summary:", census_summary)
+
+    # --- Step 7: Generate summary via OpenAI ---
+    summary_prompt = f
+"""
+You are a flood risk analyst. Based on ACS demographic data for the basin "{basin_name}"
+(from {len(collected_data)} valid geographies)
+for {time_start} to {time_end}, summarize population, age, income, disability, veteran status,
+household size, and vehicle access relevance to flood evacuation planning.
+
+Data:
+{json.dumps(census_summary, indent=2)}
+"""
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            temperature=0.3
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": summary_prompt}],
+            temperature=0.3,
+            max_tokens=400
         )
-        summary = response.choices[0].message.content.strip()
+        final_summary = response.choices[0].message.content.strip()
     except Exception as e:
         print(f"[WARN] OpenAI summary failed: {e}")
-        summary = "Summary not available due to API error."
+        final_summary = "Summary unavailable due to API issue."
 
-    return summary
+    return final_summary
   
 from crewai import LLM
 
