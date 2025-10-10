@@ -411,7 +411,337 @@ Data:
         final_summary = "Summary unavailable due to API issue."
 
     return final_summary
-  
+
+import os
+import json
+import requests
+import numpy as np
+import matplotlib.pyplot as plt
+from openai import OpenAI
+from sklearn.preprocessing import MinMaxScaler
+
+def generate_risk_heatmap(basin_name, time_start, time_end):
+    """
+    Generates a socioeconomic risk heatmap for the given basin area
+    based on ACS Census data. It identifies smallest available units (block group → tract → county),
+    computes a risk index using normalized demographic indicators, and saves a heatmap PNG.
+    """
+
+    print(f"[INFO] Starting census-based risk heatmap for basin: {basin_name}")
+
+    # --- Step 1: Year extraction ---
+    try:
+        if hasattr(time_start, "year"):
+            year = time_start.year
+        else:
+            year = int(str(time_start).split("-")[0])
+    except Exception:
+        year = 2025
+
+    # --- Step 2: OpenAI to find smallest geographies ---
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    client = OpenAI(api_key=openai_api_key)
+
+    geo_prompt = f
+"""
+You are a GIS assistant. The hydrological basin "{basin_name}" spans multiple U.S. Census areas.
+Return a JSON object named 'geographies' listing the smallest available ACS geography units
+(block groups preferred; if not, use tracts; if not, use counties)
+that intersect this basin.
+
+Each entry must include:
+- geography_level ("block_group", "tract", or "county")
+- state_fips
+- county_fips
+- tract (if applicable)
+- block_group (if applicable)
+
+Return valid JSON only.
+"""
+
+    try:
+        geo_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": geo_prompt}],
+            temperature=0.2,
+            max_tokens=500
+        )
+        geo_text = geo_response.choices[0].message.content.strip()
+        json_start = geo_text.find("{")
+        json_end = geo_text.rfind("}") + 1
+        geo_json_str = geo_text[json_start:json_end]
+        geo_data = json.loads(geo_json_str)
+        geographies = geo_data.get("geographies", [])
+        print("[INFO] Identified geographies:", geographies)
+    except Exception as e:
+        print(f"[WARN] Could not parse geographies from OpenAI: {e}")
+        geographies = []
+
+    # --- Step 3: Fallback if empty ---
+    if not geographies:
+        print("[WARN] Falling back to default county for approximation.")
+        geographies = [{
+            "geography_level": "county",
+            "state_fips": "40",
+            "county_fips": "015"
+        }]
+
+    # --- Step 4: Define variables & Census API ---
+    census_api_key = os.environ.get("CENSUS_API_KEY")
+    if not census_api_key:
+        print("[WARN] Missing Census API key — skipping data fetch.")
+        return None, "No Census API key provided."
+
+    vars_list = [
+        "B01003_001E",  # total population
+        "B19013_001E",  # median household income
+        "B01002_001E",  # median age
+        "B25010_001E",  # household size
+        "B08201_002E",  # households with vehicle
+        "C18108_001E",  # disability
+    ]
+    get_vars = ",".join(vars_list)
+
+    def try_fetch(level):
+        """Fetch ACS data for all geographies of a specific level."""
+        collected = []
+        for g in geographies:
+            if g["geography_level"] != level:
+                continue
+            try:
+                base_url = f"https://api.census.gov/data/{year}/acs/acs5"
+                if level == "block_group":
+                    geo_params = (
+                        f"for=block%20group:{g['block_group']}"
+                        f"&in=state:{g['state_fips']}+county:{g['county_fips']}+tract:{g['tract']}"
+                    )
+                elif level == "tract":
+                    geo_params = (
+                        f"for=tract:{g['tract']}"
+                        f"&in=state:{g['state_fips']}+county:{g['county_fips']}"
+                    )
+                elif level == "county":
+                    geo_params = f"for=county:{g['county_fips']}&in=state:{g['state_fips']}"
+                else:
+                    continue
+
+                url = f"{base_url}?get={get_vars}&{geo_params}&key={census_api_key}"
+                resp = requests.get(url)
+
+                if not resp.text.strip():
+                    print(f"[INFO] ACS returned empty for {g}")
+                    continue
+
+                data = resp.json()
+                if len(data) > 1:
+                    header, row = data[0], data[1]
+                    record = {
+                        "name": f"{level}_{g.get('county_fips','')}_{g.get('tract','')}_{g.get('block_group','')}",
+                    }
+                    for i, h in enumerate(header):
+                        record[h] = float(row[i]) if row[i] not in [None, ""] else 0
+                    collected.append(record)
+            except Exception as e:
+                print(f"[WARN] Failed to fetch ACS for {g}: {e}")
+        return collected
+
+    collected_data = try_fetch("block_group")
+    if not collected_data:
+        print("[INFO] Block group unavailable, trying tract...")
+        collected_data = try_fetch("tract")
+    if not collected_data:
+        print("[INFO] Tract unavailable, trying county...")
+        collected_data = try_fetch("county")
+
+    if not collected_data:
+        print("[WARN] No ACS data found for", basin_name)
+        return None, f"No data found for {basin_name}."
+
+    # --- Step 5: Calculate Risk Index ---
+    df = []
+    names = []
+    for record in collected_data:
+        names.append(record["name"])
+        df.append([
+            record.get("B01003_001E", 0),  # population
+            record.get("B19013_001E", 0),  # income
+            record.get("B01002_001E", 0),  # age
+            record.get("B25010_001E", 0),  # household size
+            record.get("B08201_002E", 0),  # vehicle
+            record.get("C18108_001E", 0),  # disability
+        ])
+
+    df = np.array(df, dtype=float)
+    scaler = MinMaxScaler()
+    df_norm = scaler.fit_transform(df)
+
+    # weights: low income ↑, high age ↑, large household ↑, low vehicle ↑, high disability ↑
+    weights = np.array([0.1, 0.25, 0.2, 0.15, 0.15, 0.15])
+    df_norm[:, 1] = 1 - df_norm[:, 1]  # invert income (low = high risk)
+    df_norm[:, 4] = 1 - df_norm[:, 4]  # invert vehicle access
+
+    risk_scores = np.dot(df_norm, weights)
+
+    # --- Step 6: Generate Heatmap ---
+    fig, ax = plt.subplots(figsize=(8, 5))
+    cmap = plt.cm.get_cmap("YlOrRd")
+    sc = ax.scatter(
+        range(len(risk_scores)),
+        [1]*len(risk_scores),
+        c=risk_scores,
+        cmap=cmap,
+        s=300,
+        edgecolor="black"
+    )
+    plt.colorbar(sc, ax=ax, label="Risk Index")
+    ax.set_yticks([])
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
+    ax.set_title(f"Socioeconomic Risk Map — {basin_name}")
+    plt.tight_layout()
+
+    riskmap_path = f"risk_heatmap_{basin_name.replace(' ', '_')}.png"
+    plt.savefig(riskmap_path, dpi=200)
+    plt.close()
+
+    # --- Step 7: Summary ---
+    high_risk_idx = np.argsort(risk_scores)[-3:][::-1]
+    risk_summary = "Top high-risk geographies:\n"
+    for i in high_risk_idx:
+        risk_summary += f"- {names[i]} (Risk={risk_scores[i]:.3f})\n"
+
+    risk_summary += "\nWeights: Income↓, Age↑, Household size↑, Vehicle↓, Disability↑"
+    print("[INFO] Risk heatmap generated at:", riskmap_path)
+        # --- Step 8: US Map Visualization (auto-detecting block/tract/county) ---
+    try:
+        print("[INFO] Generating geographic visualization on US map...")
+
+        import re
+        import geopandas as gpd
+        import pandas as pd
+        import io, zipfile, us
+
+        # --- Extract geographies dynamically ---
+        geo_matches = {
+            "block_group": re.findall(r"block_group_\d+_\d+_\d+", risk_summary),
+            "tract": re.findall(r"tract_\d+_\d+", risk_summary),
+            "county": re.findall(r"county_\d+", risk_summary),
+        }
+
+        geography_level = None
+        first_geo = None
+        for level, matches in geo_matches.items():
+            if matches:
+                geography_level = level
+                first_geo = matches[0]
+                break
+
+        if not first_geo:
+            print("[WARN] No geographic identifiers found in risk_summary. Skipping map.")
+            geo_map_path = None
+        else:
+            print(f"[INFO] Detected geography level: {geography_level}")
+
+            # --- Extract numeric codes from identifier ---
+            parts = first_geo.split("_")
+            county_fips = tract = block_group = None
+            if geography_level == "block_group":
+                county_fips, tract, block_group = parts[2], parts[3], parts[4]
+            elif geography_level == "tract":
+                county_fips, tract = parts[1], parts[2]
+            elif geography_level == "county":
+                county_fips = parts[1]
+
+            # --- Lookup state_fips dynamically ---
+            state_fips = None
+            for g in geographies:
+                if (
+                    g.get("county_fips") == county_fips
+                    and (g.get("tract") == tract or g.get("tract") is None)
+                    and (g.get("block_group") == block_group or g.get("block_group") is None)
+                ):
+                    state_fips = g.get("state_fips")
+                    break
+
+            if not state_fips:
+                print("[WARN] Could not find state_fips from risk_summary — using fallback.")
+                state_fips = geographies[0].get("state_fips", "40")
+
+            # --- State name for plotting ---
+            state_name = next((s.name for s in us.states.STATES if s.fips == state_fips), f"State_{state_fips}")
+
+            # --- Determine shapefile type ---
+            shp_type = {
+                "block_group": "BG",
+                "tract": "TRACT",
+                "county": "COUNTY"
+            }[geography_level]
+
+            tiger_dir = f"./shapefiles/tl_{year}_{state_fips}_{shp_type.lower()}"
+            shp_path = os.path.join(tiger_dir, f"tl_{year}_{state_fips}_{shp_type.lower()}.shp")
+            os.makedirs(tiger_dir, exist_ok=True)
+
+            if not os.path.exists(shp_path):
+                url = f"https://www2.census.gov/geo/tiger/TIGER{year}/{shp_type}/tl_{year}_{state_fips}_{shp_type.lower()}.zip"
+                print(f"[INFO] Downloading TIGER shapefile from: {url}")
+                resp = requests.get(url)
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                    z.extractall(tiger_dir)
+
+            # --- Load shapefile ---
+            gdf = gpd.read_file(shp_path)
+
+            # --- Identify and highlight the top risky areas ---
+            highlight_gdf_list = []
+            for level, matches in geo_matches.items():
+                for geo_name in matches:
+                    parts = geo_name.split("_")
+                    if level == "block_group":
+                        county_fips, tract, block_group = parts[2], parts[3], parts[4]
+                        sel = gdf[
+                            (gdf["COUNTYFP"] == county_fips)
+                            & (gdf["TRACTCE"] == tract)
+                            & (gdf["BLKGRPCE"] == block_group)
+                        ]
+                    elif level == "tract":
+                        county_fips, tract = parts[1], parts[2]
+                        sel = gdf[
+                            (gdf["COUNTYFP"] == county_fips)
+                            & (gdf["TRACTCE"] == tract)
+                        ]
+                    elif level == "county":
+                        county_fips = parts[1]
+                        sel = gdf[gdf["COUNTYFP"] == county_fips]
+                    else:
+                        sel = gpd.GeoDataFrame()
+
+                    if not sel.empty:
+                        highlight_gdf_list.append(sel)
+
+            if highlight_gdf_list:
+                highlight_gdf = gpd.GeoDataFrame(pd.concat(highlight_gdf_list))
+            else:
+                highlight_gdf = gdf.sample(min(3, len(gdf)), random_state=42)
+                print("[WARN] No direct match found, showing sample highlights.")
+
+            # --- Plot final map ---
+            fig, ax = plt.subplots(figsize=(8, 6))
+            gdf.plot(ax=ax, color="lightgrey", linewidth=0.2)
+            highlight_gdf.plot(ax=ax, color="red", alpha=0.7)
+            ax.set_title(f"High-Risk {geography_level.capitalize()}s in {state_name}")
+            ax.axis("off")
+
+            geo_map_path = f"geo_heatmap_{basin_name.replace(' ', '_')}.png"
+            plt.tight_layout()
+            plt.savefig(geo_map_path, dpi=250)
+            plt.close()
+            print("[INFO] Geographic map saved:", geo_map_path)
+
+    except Exception as e:
+        print(f"[WARN] Geographic visualization failed: {e}")
+        geo_map_path = None
+    return riskmap_path, risk_summary,geo_map_path
+    
 from crewai import LLM
 
 def _get_crewai_llm(model_name: str, *, temperature: float = 0.7) -> LLM:
