@@ -6,6 +6,54 @@ import pandas as pd
 # Global timeout setting for EF5 process (in seconds)
 TIMEOUT_S = 4000
 
+def _detect_container_runtime(preferred: Optional[str] = None) -> str:
+    """Return 'container' or 'docker' based on availability, honoring preference.
+
+    Preference can be passed explicitly or via environment variable EF5_RUNTIME.
+    """
+    import shutil, os
+    pref = preferred or os.environ.get("EF5_RUNTIME")
+    if pref in ("container", "docker") and shutil.which(pref):
+        return pref
+    for cmd in ("container", "docker"):
+        if shutil.which(cmd):
+            return cmd
+    raise RuntimeError("Neither 'container' nor 'docker' command found on PATH.")
+
+
+def _run_ef5_via_container(control_file: str, log_path: Optional[str] = None, image: str = "ef5image", runtime: Optional[str] = None) -> None:
+    """Run EF5 via available container runtime, mounting the current working directory.
+
+    Parameters
+    ----------
+    control_file : str
+        Path to control.txt relative to CWD mounted into the container.
+    log_path : Optional[str]
+        If provided, process output is written here; otherwise goes to stdout.
+    image : str
+        Container image name that contains EF5 (`ef5` binary in PATH).
+    runtime : Optional[str]
+        Force a runtime ('container' or 'docker'); if None, auto-detect.
+    """
+    import subprocess
+    from pathlib import Path
+
+    runtime_cmd = _detect_container_runtime(runtime)
+    workdir = Path.cwd()
+    cmd = [
+        runtime_cmd, "run", "--rm",
+        "-v", f"{workdir}:/work",
+        "-w", "/work",
+        image,
+        "ef5", control_file,
+    ]
+
+    if log_path:
+        with open(log_path, "w", encoding="utf-8") as log:
+            subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=True, text=True)
+    else:
+        subprocess.run(cmd, check=True)
+
 def generate_control_file(
     time_begin: datetime,
     time_end: datetime,
@@ -450,86 +498,18 @@ def crest_run(args,crest_args):
     #             print(f"Error running ef5_64.exe, return code: {e.returncode}")
     #         except Exception as e:
     #             print(f"An exception occurred while running ef5_64.exe: {e}")
-    import platform, subprocess, sys, time
     from pathlib import Path
-
-    exe = Path.cwd() / "ef5_64.exe"
-    if platform.system() == "Windows":
-        import win32gui
-        import win32con
-        import win32process
-        if not exe.exists():
-            print(f"{exe} not found")
-            return
-        EXE = exe
-        WIN_TITLE = "Ensemble Framework For Flash Flood Forecasting"
-        proc = subprocess.Popen([str(EXE)])
-
-        start = time.time()
-
-        print(f"EF5 started with PID {proc.pid}, waiting up to {TIMEOUT_S}s")
-
-        while True:
-            if time.time() - start > TIMEOUT_S:
-                print("Timeout reached, sending WM_CLOSE") 
-                break
-
-            if proc.poll() is not None:
-                print(f"EF5 exited early with return code {proc.returncode}")
-                break
-
-            time.sleep(0.5)
-
-        def _close_windows_by_pid(pid: int):
-            try:
-                def _enum(hwnd, _):
-                    try:
-                        _, p = win32process.GetWindowThreadProcessId(hwnd)
-                        if p == pid:
-                            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                    except Exception:
-                        pass
-                win32gui.EnumWindows(_enum, None)
-            except Exception:
-                pass
-
-        _close_windows_by_pid(proc.pid)
-
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            print("WM_CLOSE failed, using taskkill")
-            try:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            except Exception:
-                pass
-
-        print("EF5 process ended with return code", proc.returncode)
-
-
-    else:
-        # Linux path 
-        ef5_path = "./EF5/bin/ef5"
-        control_path = "control.txt"
-        out_dir = Path(args.crest_output_path)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        log_file = out_dir / "ef5_run.log"
-        if not ef5_path and not os.path.isfile(ef5_path):
-            raise FileNotFoundError(f"{ef5_path} not found. Please make sure EF5 binary exists.")
-
-        # Redirect both stdout and stderr to the same log file
-        with log_file.open("w") as log:
-            try:
-                subprocess.run([ef5_path, control_path],
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            check=True,
-                            text=True)                   # Write content as text
-            except subprocess.CalledProcessError as e:
-                # Append error information to the log file
-                log.write(f"\nEF5 exited with return code {e.returncode}\n")
-                raise                                           # Re-raise the exception for the caller to catch
+    control_path = "control.txt"
+    out_dir = Path(args.crest_output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_file = out_dir / "ef5_run.log"
+    try:
+        runtime = getattr(args, 'container_runtime', None)
+        _run_ef5_via_container(control_path, str(log_file), runtime=runtime)
+    except Exception as e:
+        with open(log_file, "a", encoding="utf-8") as log:
+            log.write(f"\nEF5 docker run failed: {e}\n")
+        raise
 
 
     visualize_model_results(args)
@@ -720,86 +700,18 @@ def crest_run_default(args):
         control_file_path=args.control_file_path,
     )
 
-    import platform, subprocess, sys, time
     from pathlib import Path
-
-    exe = Path.cwd() / "ef5_64.exe"
-    if platform.system() == "Windows":
-        import win32gui
-        import win32con
-        import win32process
-        if not exe.exists():
-            print(f"{exe} not found")
-            return
-        EXE = exe
-        WIN_TITLE = "Ensemble Framework For Flash Flood Forecasting"
-        proc = subprocess.Popen([str(EXE)])
-
-        start = time.time()
-
-        print(f"EF5 started with PID {proc.pid}, waiting up to {TIMEOUT_S}s")
-
-        while True:
-            if time.time() - start > TIMEOUT_S:
-                print("Timeout reached, sending WM_CLOSE") 
-                break
-
-            if proc.poll() is not None:
-                print(f"EF5 exited early with return code {proc.returncode}")
-                break
-
-            time.sleep(0.5)
-
-        def _close_windows_by_pid(pid: int):
-            try:
-                def _enum(hwnd, _):
-                    try:
-                        _, p = win32process.GetWindowThreadProcessId(hwnd)
-                        if p == pid:
-                            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                    except Exception:
-                        pass
-                win32gui.EnumWindows(_enum, None)
-            except Exception:
-                pass
-
-        _close_windows_by_pid(proc.pid)
-
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            print("WM_CLOSE failed, using taskkill")
-            try:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            except Exception:
-                pass
-
-        print("EF5 process ended with return code", proc.returncode)
-
-
-    else:
-        # Linux path 
-        ef5_path = "./EF5/bin/ef5"
-        control_path = "control.txt"
-        out_dir = Path(args.crest_output_path)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        log_file = out_dir / "ef5_run.log"
-        if not ef5_path and not os.path.isfile(ef5_path):
-            raise FileNotFoundError(f"{ef5_path} not found. Please make sure EF5 binary exists.")
-
-        # Redirect both stdout and stderr to the same log file
-        with log_file.open("w") as log:
-            try:
-                subprocess.run([ef5_path, control_path],
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            check=True,
-                            text=True)                   # Write content as text
-            except subprocess.CalledProcessError as e:
-                # Append error information to the log file
-                log.write(f"\nEF5 exited with return code {e.returncode}\n")
-                raise                                           # Re-raise the exception for the caller to catch
+    control_path = "control.txt"
+    out_dir = Path(args.crest_output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_file = out_dir / "ef5_run.log"
+    try:
+        runtime = getattr(args, 'container_runtime', None)
+        _run_ef5_via_container(control_path, str(log_file), runtime=runtime)
+    except Exception as e:
+        with open(log_file, "a", encoding="utf-8") as log:
+            log.write(f"\nEF5 docker run failed: {e}\n")
+        raise
 
 
     visualize_model_results(args, default_flag=True)
@@ -1042,86 +954,18 @@ def crest_run_cali(args):
     warmup_state_folder = args.warmup_state_folder,
     water_balance_type = args.water_balance_type
     )
-    import platform, subprocess, sys, time
     from pathlib import Path
-
-    exe = Path.cwd() / "ef5_64.exe"
-    if platform.system() == "Windows":
-        import win32gui
-        import win32con
-        import win32process
-        if not exe.exists():
-            print(f"{exe} not found")
-            return
-        EXE = exe
-        WIN_TITLE = "Ensemble Framework For Flash Flood Forecasting"
-        proc = subprocess.Popen([str(EXE)])
-
-        start = time.time()
-
-        print(f"EF5 started with PID {proc.pid}, waiting up to {TIMEOUT_S}s")
-
-        while True:
-            if time.time() - start > TIMEOUT_S:
-                print("Timeout reached, sending WM_CLOSE") 
-                break
-
-            if proc.poll() is not None:
-                print(f"EF5 exited early with return code {proc.returncode}")
-                break
-
-            time.sleep(0.5)
-
-        def _close_windows_by_pid(pid: int):
-            try:
-                def _enum(hwnd, _):
-                    try:
-                        _, p = win32process.GetWindowThreadProcessId(hwnd)
-                        if p == pid:
-                            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                    except Exception:
-                        pass
-                win32gui.EnumWindows(_enum, None)
-            except Exception:
-                pass
-
-        _close_windows_by_pid(proc.pid)
-
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            print("WM_CLOSE failed, using taskkill")
-            try:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-            except Exception:
-                pass
-
-        print("EF5 process ended with return code", proc.returncode)
-
-
-    else:
-        # Linux path 
-        ef5_path = "./EF5/bin/ef5"
-        control_path = "control.txt"
-        out_dir = Path(args.crest_output_path)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        log_file = out_dir / "ef5_run.log"
-        if not ef5_path and not os.path.isfile(ef5_path):
-            raise FileNotFoundError(f"{ef5_path} not found. Please make sure EF5 binary exists.")
-
-        # Redirect both stdout and stderr to the same log file
-        with log_file.open("w") as log:
-            try:
-                subprocess.run([ef5_path, control_path],
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            check=True,
-                            text=True)                   # Write content as text
-            except subprocess.CalledProcessError as e:
-                # Append error information to the log file
-                log.write(f"\nEF5 exited with return code {e.returncode}\n")
-                raise                                           # Re-raise the exception for the caller to catch
+    control_path = "control.txt"
+    out_dir = Path(args.crest_output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log_file = out_dir / "ef5_run.log"
+    try:
+        runtime = getattr(args, 'container_runtime', None)
+        _run_ef5_via_container(control_path, str(log_file), runtime=runtime)
+    except Exception as e:
+        with open(log_file, "a", encoding="utf-8") as log:
+            log.write(f"\nEF5 docker run failed: {e}\n")
+        raise
 
 
     visualize_model_results(args)

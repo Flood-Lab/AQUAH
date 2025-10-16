@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# Notebooks & local caches
+*.ipynb_checkpoints
+
+# Large data/output directories (mount as volumes instead)
+BasicData/
+BasicData_Clip/
+CREST_input/
+CREST_output/
+EF5_tools/
+MRMS_data/
+PET_data/
+USGS_gauge/
+figures/
+report/
+reports/
+resource/
+
+# Media
+*.mp4
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+
+# Misc
+.DS_Store
+*.log
+*.zip
+*.tar
+*.tar.gz
+*.gz
+*.7z
+
+# Node/others
+node_modules/
