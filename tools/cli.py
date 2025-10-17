@@ -58,6 +58,7 @@ def print_landing_page() -> None:
     for i, name in enumerate(AVAILABLE_MODELS, start=1):
         print(f"     {i}. {name}")
     print("  3. You will specify the flood period during the simulation prompts")
+    print("  4. Provide the US CENSUS API key if you want to generate a report with census data: https://api.census.gov/data/key_signup.html")
     print()
 
 def prompt_model() -> str:
@@ -92,16 +93,32 @@ def main() -> int:
             return 1
         os.environ["OPENAI_API_KEY"] = key_input.strip()
 
-    # 2) Model selection
+    # 2) Census API key (optional but recommended for demographic analysis)
+    existing_census_key = os.environ.get("CENSUS_API_KEY")
+    if existing_census_key:
+        print("Detected CENSUS_API_KEY in environment. Press Enter to reuse or type a new key.")
+        census_input = getpass("Census API key [hidden] (leave blank to keep): ")
+        if census_input.strip():
+            os.environ["CENSUS_API_KEY"] = census_input.strip()
+    else:
+        print("\nCensus API Key (optional but recommended for demographic analysis):")
+        print("Get your free API key at: https://api.census.gov/data/key_signup.html")
+        census_input = getpass("Census API key [hidden] (leave blank to skip): ")
+        if census_input.strip():
+            os.environ["CENSUS_API_KEY"] = census_input.strip()
+        else:
+            print("No Census API key provided. Demographic analysis will be limited.")
+
+    # 3) Model selection
     model = prompt_model()
 
     # Optional: prevent noisy telemetry
     os.environ.setdefault("OTEL_PYTHON_DISABLED", "true")
 
-    # 3) Persist model; flood period will be prompted later by the runner
+    # 4) Persist model; flood period will be prompted later by the runner
     os.environ["OPENAI_MODEL_NAME"] = model
 
-    # 4) Run
+    # 5) Run
     try:
         from tools.aquah_run import aquah_run
     except Exception as exc:

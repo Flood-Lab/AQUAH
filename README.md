@@ -1,5 +1,7 @@
 # AQUAH_v0.2
 
+<img src="res/landing.png">
+
 An AI-Driven Hydrologic Modeling Agent for Automated Flood Simulation, Data Integration, and Intelligent Reporting.
 
 ---
@@ -13,6 +15,21 @@ https://github.com/user-attachments/assets/4a78fdd6-3d27-4907-bc82-36afa62e4760
 
 
 ## Installation
+
+The easiest way to run AQUAH is through the docker file
+
+Build AQUAH image:
+
+```bash
+docker build --no-cache --pull -t aquah -f Dockerfile .
+```
+run AQUAH:
+
+```bash
+docker run --rm -it aquah
+```
+
+
 
 Clone the repository:
 

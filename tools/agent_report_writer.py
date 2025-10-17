@@ -833,11 +833,13 @@ def final_report_writer(args, crest_args, agents_config, tasks_config, iteration
     output_pdf_path = os.path.join(args.report_path, f'Hydro_Report_{args.basin_name.replace(" ", "_")}_{args.llm_model_name}_{iteration_num:02d}.pdf')
     
     try:
+        import pypandoc
         output = pypandoc.convert_file('Hydro_Report.md', 'pdf', outputfile=output_pdf_path, extra_args=extra_xelatex)
         print("PDF generated successfully with XeLaTeX")
     except Exception as e:
         print(f"XeLaTeX failed ({e}), trying pdflatex...")
         try:
+            import pypandoc
             output = pypandoc.convert_file('Hydro_Report.md', 'pdf', outputfile=output_pdf_path, extra_args=extra_pdflatex)
             print("PDF generated successfully with pdflatex")
         except Exception as e2:
