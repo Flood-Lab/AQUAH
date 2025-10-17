@@ -2,12 +2,15 @@
 import os, re
 os.environ["OTEL_PYTHON_DISABLED"] = "true"
 os.environ["OTEL_PYTHON_TRACER_PROVIDER"] = "none"
+# Silence onnxruntime warnings (e.g., cpuid_info) at source
+os.environ.setdefault("ORT_LOG_SEVERITY_LEVEL", "4")  # 0=VERBOSE … 4=ERROR
 import pypandoc
 
 import yaml
 from crewai import Agent, Task, Crew
 import warnings
 from opentelemetry import trace
+from pathlib import Path
 
 # Disable the TracerProvider warning by setting the environment variable
 os.environ["OTEL_PYTHON_TRACER_PROVIDER"] = "none"
@@ -179,6 +182,7 @@ def feedback_agent(feedback: str):
 def aquah_run(llm_model_name: str):
     # Warning control
     warnings.filterwarnings('ignore')
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
     import logging
     logging.getLogger("opentelemetry.trace").setLevel(logging.ERROR)
 
@@ -273,34 +277,45 @@ def aquah_run(llm_model_name: str):
     # default args
     args.basin_shp_path = f'shpFile/Basin_selected.shp'
     args.basin_level = 4
-    args.gauge_meta_path = 'EF5_tools/gauge_meta.csv'
-    args.figure_path = 'figures'
-    args.basic_data_path = 'BasicData'
-    args.basic_data_clip_path = 'BasicData_Clip'
-    args.usgs_data_path = 'USGS_gauge'
-    args.mrms_data_path = 'MRMS_data'
-    args.crest_input_mrms_path = 'CREST_input/MRMS/'
+    # Resolve project-rooted paths robustly
+    project_root = Path(__file__).resolve().parents[1]
+    gauge_meta_default = project_root / 'EF5_tools' / 'gauge_meta.csv'
+    args.gauge_meta_path = str(gauge_meta_default)
+    # Create all necessary directories in /app
+    base_path = Path('/app')
+    args.figure_path = str(base_path / 'figures')
+    args.basic_data_path = str(base_path / 'BasicData')
+    args.basic_data_clip_path = str(base_path / 'BasicData_Clip')
+    args.usgs_data_path = str(base_path / 'USGS_gauge')
+    args.mrms_data_path = str(base_path / 'MRMS_data')
+    args.crest_input_mrms_path = str(base_path / 'CREST_input' / 'MRMS')
     args.num_processes = 4
-    args.pet_data_path = 'PET_data'
-    args.crest_input_pet_path = 'CREST_input/PET/'
-    args.crest_output_path = 'CREST_output'
-    args.control_file_path = 'control.txt'
-    args.report_path = 'report'
-    args.time_step = '1d'
+    args.pet_data_path = str(base_path / 'PET_data')
+    args.crest_input_pet_path = str(base_path / 'CREST_input' / 'PET')
+    args.crest_output_path = str(base_path / 'CREST_output')
+    args.control_file_path = str(base_path / 'control.txt')
+    args.report_path = str(base_path / 'report')
+    
+    # Create all directories
+    for path in [args.figure_path, args.basic_data_path, args.basic_data_clip_path, 
+                 args.usgs_data_path, args.mrms_data_path, args.crest_input_mrms_path,
+                 args.pet_data_path, args.crest_input_pet_path, args.crest_output_path, 
+                 args.report_path]:
+        Path(path).mkdir(parents=True, exist_ok=True)
     args.time_step = '1h'
     current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-    args.figure_path = os.path.join(args.figure_path, current_time)
+    args.figure_path = str(Path(args.figure_path) / current_time)
+    Path(args.figure_path).mkdir(parents=True, exist_ok=True)
     args.input_text = input_text
     args.water_balance_type = 'crestphys'
     args.warmup_flag = False
     args.warmup_time_step = args.time_step
     args.warmup_days = 30
     args.warmup_time_end = args.time_start
-    args.warmup_state_folder = os.path.join('warmup_state', current_time)
+    args.warmup_state_folder = str(base_path / 'warmup_state' / current_time)
     if args.warmup_flag:
         # Create warmup state folder if it doesn't exist
-        if not os.path.exists(args.warmup_state_folder):
-            os.makedirs(args.warmup_state_folder)
+        Path(args.warmup_state_folder).mkdir(parents=True, exist_ok=True)
         print(f"Warmup is enabled, {args.warmup_days} days, created warmup state folder: {args.warmup_state_folder}")
         from datetime import datetime, timedelta
         args.warmup_time_start = args.time_start - timedelta(days=args.warmup_days)
@@ -472,8 +487,6 @@ def aquah_run(llm_model_name: str):
     else:
         print("[WARN] Hydro_Report.md not found, cannot append summary.")
 
-    import os
-    import pypandoc
     from tools.agent_report_writer import generate_risk_heatmap
     print("[INFO] Generating socioeconomic risk heatmap...")
     riskmap_path, risk_summary,geo_map_path = generate_risk_heatmap(

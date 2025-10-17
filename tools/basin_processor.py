@@ -643,8 +643,9 @@ def plot_watershed_with_gauges(
     gdf_buffer = gdf.copy()
     gdf_buffer["geometry"] = gdf_buffer.buffer(buffer_m)
 
+    # Use union_all() to avoid deprecated unary_union warning
     centroid_ll = (
-        gpd.GeoSeries([gdf.geometry.unary_union.centroid], crs="EPSG:3857")
+        gpd.GeoSeries([gdf.geometry.union_all().centroid], crs="EPSG:3857")
         .to_crs(epsg=4326)
         .iloc[0]
     )

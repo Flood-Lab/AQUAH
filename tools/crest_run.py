@@ -6,48 +6,37 @@ import pandas as pd
 # Global timeout setting for EF5 process (in seconds)
 TIMEOUT_S = 4000
 
-def _detect_container_runtime(preferred: Optional[str] = None) -> str:
-    """Return 'container' or 'docker' based on availability, honoring preference.
+def _find_ef5_binary() -> str:
+    """Locate the EF5 executable inside the image.
 
-    Preference can be passed explicitly or via environment variable EF5_RUNTIME.
+    Search order:
+    1) ef5 on PATH
+    2) /app/EF5/bin/ef5 (copied in Dockerfile)
+    3) /opt/EF5/bin/ef5 (fallback)
     """
-    import shutil, os
-    pref = preferred or os.environ.get("EF5_RUNTIME")
-    if pref in ("container", "docker") and shutil.which(pref):
-        return pref
-    for cmd in ("container", "docker"):
-        if shutil.which(cmd):
-            return cmd
-    raise RuntimeError("Neither 'container' nor 'docker' command found on PATH.")
-
-
-def _run_ef5_via_container(control_file: str, log_path: Optional[str] = None, image: str = "ef5image", runtime: Optional[str] = None) -> None:
-    """Run EF5 via available container runtime, mounting the current working directory.
-
-    Parameters
-    ----------
-    control_file : str
-        Path to control.txt relative to CWD mounted into the container.
-    log_path : Optional[str]
-        If provided, process output is written here; otherwise goes to stdout.
-    image : str
-        Container image name that contains EF5 (`ef5` binary in PATH).
-    runtime : Optional[str]
-        Force a runtime ('container' or 'docker'); if None, auto-detect.
-    """
-    import subprocess
-    from pathlib import Path
-
-    runtime_cmd = _detect_container_runtime(runtime)
-    workdir = Path.cwd()
-    cmd = [
-        runtime_cmd, "run", "--rm",
-        "-v", f"{workdir}:/work",
-        "-w", "/work",
-        image,
-        "ef5", control_file,
+    import shutil
+    candidates = [
+        shutil.which("ef5"),
+        "/app/EF5/bin/ef5",
+        "/opt/EF5/bin/ef5",
     ]
+    
+    print(f"DEBUG: Searching for EF5 binary...")
+    for candidate in candidates:
+        print(f"DEBUG: Checking {candidate}: exists={os.path.exists(candidate) if candidate else False}")
+        if candidate and os.path.exists(candidate):
+            print(f"DEBUG: Found EF5 at {candidate}")
+            return candidate
+    
+    print(f"DEBUG: EF5 binary not found in any of the expected locations")
+    raise FileNotFoundError("EF5 binary not found. Expected 'ef5' in PATH or at /app/EF5/bin/ef5")
 
+
+def _run_ef5_local(control_file: str, log_path: Optional[str] = None) -> None:
+    """Run EF5 directly inside the container image."""
+    import subprocess
+    ef5_bin = _find_ef5_binary()
+    cmd = [ef5_bin, control_file]
     if log_path:
         with open(log_path, "w", encoding="utf-8") as log:
             subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=True, text=True)
@@ -96,8 +85,10 @@ def generate_control_file(
     All other parameters are as in earlier versions.
     """
 
+    print(f"DEBUG: gauges_list columns: {list(gauges_list.columns)}")
+    print(f"DEBUG: gauges_list shape: {gauges_list.shape}")
     if not {"STAID", "LNG_GAGE", "LAT_GAGE"}.issubset(gauges_list.columns):
-        raise ValueError("gauges_list DataFrame must include STAID, LNG_GAGE, LAT_GAGE columns")
+        raise ValueError(f"gauges_list DataFrame must include STAID, LNG_GAGE, LAT_GAGE columns. Found: {list(gauges_list.columns)}")
 
     g_ids = gauges_list["STAID"].astype(str).str.zfill(8).tolist()
     g_lons = gauges_list["LNG_GAGE"].astype(float).tolist()
@@ -198,8 +189,10 @@ def generate_control_file(
     )
 
     # ---------- Write file ----------
+    print(f"DEBUG: Writing control file to: {control_file_path}")
     with open(control_file_path, "w", encoding="utf-8") as fp:
         fp.write(control_content)
+    print(f"DEBUG: Control file written successfully")
 
     return os.path.abspath(control_file_path)
 
@@ -449,6 +442,8 @@ def evaluate_model_performance(args, default_flag=False):
 
 
 def crest_run(args,crest_args):
+    print(f"DEBUG: Current working directory: {os.getcwd()}")
+    print(f"DEBUG: Control file path: {args.control_file_path}")
     if not os.path.exists(args.crest_output_path):
         os.makedirs(args.crest_output_path)
     generate_control_file(
@@ -499,13 +494,12 @@ def crest_run(args,crest_args):
     #         except Exception as e:
     #             print(f"An exception occurred while running ef5_64.exe: {e}")
     from pathlib import Path
-    control_path = "control.txt"
+    control_path = args.control_file_path  # Use absolute path from args
     out_dir = Path(args.crest_output_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     log_file = out_dir / "ef5_run.log"
     try:
-        runtime = getattr(args, 'container_runtime', None)
-        _run_ef5_via_container(control_path, str(log_file), runtime=runtime)
+        _run_ef5_local(control_path, str(log_file))
     except Exception as e:
         with open(log_file, "a", encoding="utf-8") as log:
             log.write(f"\nEF5 docker run failed: {e}\n")
@@ -701,13 +695,12 @@ def crest_run_default(args):
     )
 
     from pathlib import Path
-    control_path = "control.txt"
+    control_path = args.control_file_path  # Use absolute path from args
     out_dir = Path(args.crest_output_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     log_file = out_dir / "ef5_run.log"
     try:
-        runtime = getattr(args, 'container_runtime', None)
-        _run_ef5_via_container(control_path, str(log_file), runtime=runtime)
+        _run_ef5_local(control_path, str(log_file))
     except Exception as e:
         with open(log_file, "a", encoding="utf-8") as log:
             log.write(f"\nEF5 docker run failed: {e}\n")
@@ -955,13 +948,12 @@ def crest_run_cali(args):
     water_balance_type = args.water_balance_type
     )
     from pathlib import Path
-    control_path = "control.txt"
+    control_path = args.control_file_path  # Use absolute path from args
     out_dir = Path(args.crest_output_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     log_file = out_dir / "ef5_run.log"
     try:
-        runtime = getattr(args, 'container_runtime', None)
-        _run_ef5_via_container(control_path, str(log_file), runtime=runtime)
+        _run_ef5_local(control_path, str(log_file))
     except Exception as e:
         with open(log_file, "a", encoding="utf-8") as log:
             log.write(f"\nEF5 docker run failed: {e}\n")

@@ -257,8 +257,7 @@ def generate_census_based_summary(basin_name, time_start, time_end):
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     client = OpenAI(api_key=openai_api_key)
 
-    geo_prompt = f
-    """
+    geo_prompt = f"""
 You are a GIS expert. The hydrological basin "{basin_name}" spans multiple U.S. Census areas.
 Return a JSON object listing the smallest available ACS geography units (prefer block groups; 
 if not, use tracts; if not, use counties) intersecting this basin.
@@ -270,8 +269,8 @@ For each geography, include:
 - tract (if applicable)
 - block_group (if applicable)
 
-Return valid JSON on
-    """
+Return valid JSON only.
+"""
 
     try:
         geo_response = client.chat.completions.create(
@@ -388,8 +387,7 @@ Return valid JSON on
     print("[INFO] Aggregated Census Summary:", census_summary)
 
     # --- Step 7: Generate summary via OpenAI ---
-    summary_prompt = f
-"""
+    summary_prompt = f"""
 You are a flood risk analyst. Based on ACS demographic data for the basin "{basin_name}"
 (from {len(collected_data)} valid geographies)
 for {time_start} to {time_end}, summarize population, age, income, disability, veteran status,
@@ -442,8 +440,7 @@ def generate_risk_heatmap(basin_name, time_start, time_end):
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     client = OpenAI(api_key=openai_api_key)
 
-    geo_prompt = f
-"""
+    geo_prompt = f"""
 You are a GIS assistant. The hydrological basin "{basin_name}" spans multiple U.S. Census areas.
 Return a JSON object named 'geographies' listing the smallest available ACS geography units
 (block groups preferred; if not, use tracts; if not, use counties)
@@ -819,12 +816,34 @@ def final_report_writer(args, crest_args, agents_config, tasks_config, iteration
     if not os.path.exists(args.report_path):
         os.makedirs(args.report_path)
 
-    extra = ['--pdf-engine=xelatex',
-         '--variable', 'mainfont=Latin Modern Roman']
+    # Try XeLaTeX first, fallback to pdflatex if it fails
+    extra_xelatex = ['--pdf-engine=xelatex',
+         '--variable', 'mainfont=Latin Modern Roman',
+         '--variable', 'sansfont=Latin Modern Sans',
+         '--variable', 'monofont=Latin Modern Mono',
+         '--variable', 'fontsize=11pt',
+         '--variable', 'geometry:margin=1in']
+    
+    extra_pdflatex = ['--pdf-engine=pdflatex',
+         '--variable', 'fontsize=11pt',
+         '--variable', 'geometry:margin=1in']
+    
     if temp_flag:
         args.llm_model_name = 'gemini-2.5-flash-preview-05-20'
     output_pdf_path = os.path.join(args.report_path, f'Hydro_Report_{args.basin_name.replace(" ", "_")}_{args.llm_model_name}_{iteration_num:02d}.pdf')
-    output = pypandoc.convert_file('Hydro_Report.md', 'pdf', outputfile=output_pdf_path,extra_args=extra)
+    
+    try:
+        output = pypandoc.convert_file('Hydro_Report.md', 'pdf', outputfile=output_pdf_path, extra_args=extra_xelatex)
+        print("PDF generated successfully with XeLaTeX")
+    except Exception as e:
+        print(f"XeLaTeX failed ({e}), trying pdflatex...")
+        try:
+            output = pypandoc.convert_file('Hydro_Report.md', 'pdf', outputfile=output_pdf_path, extra_args=extra_pdflatex)
+            print("PDF generated successfully with pdflatex")
+        except Exception as e2:
+            print(f"PDF generation failed with both engines: {e2}")
+            print("Markdown report saved as Hydro_Report.md")
+            return
     print(f"PDF report saved to {os.path.abspath(output_pdf_path)}")
     print("=== LLM used for report writing ===\n", report_writer.llm.model)
 

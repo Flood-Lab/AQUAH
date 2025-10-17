@@ -9,50 +9,50 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-RUN git clone https://github.com/HyDROSLab/EF5.git
+RUN git clone https://github.com/chrimerss/EF5
 WORKDIR /opt/EF5
 RUN autoreconf --force --install \
  && ./configure \
  && sed -i 's/-Werror//g' Makefile \
  && make -j"$(nproc)"
 
-# ---- Stage 2: Python runtime with geospatial stack and AQUAH ----
-FROM mambaorg/micromamba:1.5.8-focal
+# ---- Stage 2: Python runtime using pip, converting environment.yml pip section ----
+FROM python:3.11-slim
 
-# Create env with geospatial libs via conda-forge for GDAL/PROJ compatibility
 USER root
 SHELL ["/bin/bash", "-lc"]
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV ORT_LOG_SEVERITY_LEVEL=4
 
-# Install system fonts for pandoc PDFs and basic tools
-RUN apt-get update && apt-get install -y \
-    curl pandoc texlive-xetex lmodern \
+# System libraries for geospatial stack and PDF export
+RUN ln -fs /usr/share/zoneinfo/$TZ /etc/localtime \
+    && apt-get update \
+    && apt-get install -y tzdata \
+    && dpkg-reconfigure -f noninteractive tzdata \
+    && apt-get install -y --no-install-recommends \
+       build-essential \
+       gdal-bin libgdal-dev python3-gdal \
+       libproj-dev proj-data proj-bin \
+       libgeos-dev \
+       libtiff6 libtiff-dev \
+       libgeotiff5 libgeotiff-dev \
+       curl pandoc texlive-xetex texlive-fonts-recommended texlive-fonts-extra lmodern \
     && rm -rf /var/lib/apt/lists/*
 
-# Create env named aquah with pinned gdal/rasterio stack
-RUN micromamba create -y -n aquah -c conda-forge \
-    python=3.11 \
-    gdal \
-    rasterio \
-    geopandas \
-    proj \
-    geos \
-    shapely \
-    cartopy \
-    pip \
- && micromamba clean -a -y
-
-ENV MAMBA_DEFAULT_ENV=aquah
-ENV PATH=/opt/conda/envs/aquah/bin:$PATH
-
-# Fetch AQUAH from GitHub (no local context dependency)
 WORKDIR /app
-RUN git clone https://github.com/Flood-Lab/AQUAH.git /app
-RUN git checkout dev
+
+# Install dependencies from requirements.txt if present; otherwise from converted pip list
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy project sources (after deps for better caching)
+COPY . /app
 
 # Add minimal CLI if not present upstream
-RUN if [ ! -f tools/cli.py ]; then \
-    mkdir -p tools; \
-    cat > tools/cli.py <<'PY'; \
+RUN <<'BASH'
+if [ ! -f tools/cli.py ]; then
+  mkdir -p tools
+  cat > tools/cli.py <<'PY'
 """
 Interactive command-line launcher for AQUAH agent runs.
 Prompts for OpenAI API key and model name, then calls tools.aquah_run.aquah_run.
@@ -106,18 +106,18 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 PY
-  fi
+fi
+BASH
 
-# Install Python packages via pip if requirements.txt exists; otherwise install runtime deps
-RUN if [ -f requirements.txt ]; then \
-      pip install --no-cache-dir -r requirements.txt; \
-    else \
-      pip install --no-cache-dir numpy pandas requests PyYAML python-dateutil tqdm folium matplotlib Pillow scikit-learn dataretrieval openai anthropic google-generativeai crewai crewai-tools pypandoc opentelemetry-api; \
-    fi
 
-# Provide EF5 binary expected by crest_run.py
+
+# Provide EF5 binary and required libraries from builder stage
 RUN mkdir -p /app/EF5/bin
 COPY --from=ef5-builder /opt/EF5/bin/ef5 /app/EF5/bin/ef5
+RUN chmod +x /app/EF5/bin/ef5
+
+# Create symlink for libtiff version compatibility
+RUN find /usr -name "libtiff.so.6*" -exec ln -sf {} /usr/lib/libtiff.so.5 \;
 
 # Ensure entry folders exist
 RUN mkdir -p /app/CREST_output /app/figures
