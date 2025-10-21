@@ -457,73 +457,62 @@ def aquah_run(llm_model_name: str):
     importlib.reload(tools.agent_report_writer)
     tools.agent_report_writer.final_report_writer(args, crest_args, agents_config, tasks_config, iteration_num=0)
 
-    # Demographic summary
-    from tools.agent_report_writer import generate_census_based_summary
+    import os
+    import pypandoc
+    from tools.agent_report_writer import generate_census_based_summary, generate_risk_heatmap
+
+    # Step 1: Generate Demographic Summary
     summary_text = generate_census_based_summary(
-        basin_name=args.basin_name,
-        time_start=args.time_start,
-        time_end=args.time_end
+    basin_name=args.basin_name,
+    time_start=args.time_start,
+    time_end=args.time_end
     )
 
+    # Step 2: Generate Socioeconomic Risk Heatmap
+    print("[INFO] Generating socioeconomic risk heatmap...")
+    riskmap_path, risk_summary, geo_map_path = generate_risk_heatmap(
+    basin_name=args.basin_name,
+    time_start=args.time_start,
+    time_end=args.time_end
+    )
+
+    # Step 3: Append everything to Markdown 
     md_path = "Hydro_Report.md"
     if os.path.exists(md_path):
         with open(md_path, "a", encoding="utf-8") as f:
-            f.write("\n\n---\n### Demographic & Socioeconomic Insights\n\n")
+            # Demographic summary
+            f.write("\n\n<!-- Demographic Summary -->\n### Demographic & Socioeconomic Insights\n\n")
             f.write(summary_text + "\n")
 
-        print("[INFO] Appended demographic summary to Markdown report.")
-
-        # Regenerate PDF with appended summary
-        if not os.path.exists(args.report_path):
-           os.makedirs(args.report_path)
-
-        extra = ['--pdf-engine=xelatex', '--variable', 'mainfont=Latin Modern Roman']
-        output_pdf_path = os.path.join(
-          args.report_path,
-          f'Hydro_Report_{args.basin_name.replace(" ", "_")}_FINAL.pdf'
-        )
-        pypandoc.convert_file(md_path, 'pdf', outputfile=output_pdf_path, extra_args=extra)
-        print("[INFO] Final PDF with appended summary saved to:", output_pdf_path)
-    else:
-        print("[WARN] Hydro_Report.md not found, cannot append summary.")
-
-    from tools.agent_report_writer import generate_risk_heatmap
-    print("[INFO] Generating socioeconomic risk heatmap...")
-    riskmap_path, risk_summary,geo_map_path = generate_risk_heatmap(
-      basin_name =args.basin_name,
-      time_start =args.time_start,
-      time_end =args.time_end,
-    )
-    
-    md_path = "Hydro_Report.md"
-    if os.path.exists(md_path):
-        with open(md_path, "a", encoding="utf-8") as f:
-            f.write("\n\n---\n### Socioeconomic Risk Heatmap\n\n")
+            # Risk heatmap
+            f.write("\n\n<!-- Socioeconomic Risk Heatmap -->\n### Socioeconomic Risk Heatmap\n\n")
             if riskmap_path and os.path.exists(riskmap_path):
-                f.write(f"![Risk Hotspot Map]({riskmap_path})\n\n")
+              f.write(f"![Risk Hotspot Map]({riskmap_path})\n\n")
             f.write(risk_summary + "\n")
-            
-    md_path = "Hydro_Report.md"
-    if os.path.exists(md_path):
-        with open(md_path, "a", encoding="utf-8") as f:
-            f.write("\n\n---\n### Socioeconomic Risk choropleth Heatmap\n\n")
+
+            # Choropleth heatmap
+            f.write("\n\n<!-- Socioeconomic Risk Choropleth Heatmap -->\n### Socioeconomic Risk Choropleth Heatmap\n\n")
             if geo_map_path and os.path.exists(geo_map_path):
-                f.write(f"![Risk Hotspot Map]({geo_map_path})\n\n")
+              f.write(f"![Geo Heatmap]({geo_map_path})\n\n")
             f.write(risk_summary + "\n")
 
-        print("[INFO] Appended heatmap summary to Markdown report.")
-
-        # Regenerate PDF again to include the heatmap
-        import pypandoc
-        extra = ['--pdf-engine=xelatex', '--variable', 'mainfont=Latin Modern Roman']
-        output_pdf_path = os.path.join(
-            args.report_path,
-            f'Hydro_Report_{args.basin_name.replace(" ", "_")}_FINAL.pdf'
-        )
-        pypandoc.convert_file(md_path, 'pdf', outputfile=output_pdf_path, extra_args=extra)
-        print("[INFO] Final PDF with heatmap saved to:", output_pdf_path)
+            print("[INFO] Appended all summaries and heatmaps to Markdown report.")
     else:
-        print("[WARN] Hydro_Report.md not found in report folder, cannot append heatmap.")
+            print("[WARN] Hydro_Report.md not found, cannot append summaries or heatmaps.")
+
+    # Step 4: Generate PDF once
+    os.makedirs(args.report_path, exist_ok=True)
+    output_pdf_path = os.path.join(args.report_path,
+    f'Hydro_Report_{args.basin_name.replace(" ", "_")}_FINAL.pdf'
+    )
+
+    extra_args = ['--pdf-engine=xelatex', '--variable', 'mainfont=Latin Modern Roman']
+
+    try:
+      pypandoc.convert_file(md_path, 'pdf', outputfile=output_pdf_path, extra_args=extra_args)
+      print("[INFO] Final PDF with demographic summary and heatmaps saved to:", output_pdf_path)
+    except Exception as e:
+      print("[ERROR] Failed to generate PDF:", e)
         
 
     # Save simulation arguments to a pickle file for future reference
