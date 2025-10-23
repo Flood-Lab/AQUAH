@@ -430,7 +430,7 @@ def aquah_run(llm_model_name: str):
     #     tools.crest_run.crest_run_default(args)
     print('\n\033[1;31m\033[1m--------------------------------------------------------')
     print('Step 5: Run CREST')
-    print('--------------------------------------------------------\033[0m\033[0m\n')
+    print('------------------------------------------------------\033[0m\033[0m\n')
 
     import importlib
     import tools.agent_parameter_initial_guess
@@ -448,7 +448,7 @@ def aquah_run(llm_model_name: str):
     
 
     # return
-    print('\n\033[1;31m\033[1m--------------------------------------------------------')
+    print('\n\033[1;31m\033[1m-------------------------------------------------------')
     print('Step 6: Generate a Report')
     print('--------------------------------------------------------\033[0m\033[0m\n')
     
